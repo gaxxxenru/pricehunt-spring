@@ -1,0 +1,160 @@
+version: '2'
+
+networks:
+    pricehunt-network:
+        driver: bridge
+
+
+services:
+  zookeeper:
+    image: zookeeper:latest
+    container_name: zookeeper
+    restart: no
+    networks:
+      - pricehunt-network
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: obsidiandynamics/kafka
+    container_name: kafka
+    restart: "no"
+    networks:
+      - pricehunt-network
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DOCKER_INTERNAL:PLAINTEXT,DOCKER_EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: DOCKER_INTERNAL://:29092,DOCKER_EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: DOCKER_INTERNAL://kafka:29092,DOCKER_EXTERNAL://${DOCKER_HOST_IP:-127.0.0.1}:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER_INTERNAL
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop
+    container_name: kafdrop
+    restart: "no"
+    networks:
+      - pricehunt-network
+    ports:
+      - "9000:9000"
+    environment:
+      KAFKA_BROKERCONNECT: "kafka:29092"
+    depends_on:
+      - "kafka"
+
+
+  config-server:
+    image: vburtelov/spring-pricehunt-config-server
+    container_name: config-server
+    mem_limit: 512M
+    environment:
+      GIT_USERNAME: ${GIT_USERNAME}
+      GIT_PASSWORD: ${GIT_PASSWORD}
+    ports:
+     - "8888:8888"
+
+  discovery-server:
+    image: vburtelov/spring-pricehunt-discovery-server
+    container_name: discovery-server
+    mem_limit: 512M
+    depends_on:
+      - config-server
+    entrypoint: ["./dockerize","-wait=tcp://config-server:8888","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher"]
+    ports:
+     - "8761:8761"
+
+  api-gateway:
+    image: vburtelov/spring-pricehunt-api-gateway
+    container_name: api-gateway
+    mem_limit: 512M
+    depends_on:
+     - config-server
+     - discovery-server
+    entrypoint: ["./dockerize","-wait=tcp://discovery-server:8761","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher"]
+    ports:
+     - "8080:8080"
+
+  assortment-service:
+    image: vburtelov/spring-pricehunt-assortment-service
+    container_name: assortment-service
+    mem_limit: 512M
+    depends_on:
+      - config-server
+      - discovery-server
+      - postgresql
+    entrypoint: [ "./dockerize","-wait=tcp://discovery-server:8761","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher" ]
+    ports:
+      - "8082:8082"
+
+  auth-service:
+    image: vburtelov/spring-pricehunt-auth-service
+    container_name: auth-service
+    mem_limit: 512M
+    depends_on:
+     - config-server
+     - discovery-server
+     - postgresql
+    entrypoint: ["./dockerize","-wait=tcp://discovery-server:8761","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher"]
+    ports:
+     - "8081:8081"
+
+  pleerru-producer:
+    image: vburtelov/spring-pricehunt-pleerru-producer
+    container_name: pleerru-service
+    mem_limit: 512M
+    depends_on:
+     - config-server
+     - discovery-server
+    entrypoint: ["./dockerize","-wait=tcp://discovery-server:8761","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher"]
+    ports:
+     - "8083:8083"
+
+  postgresql:
+    image: postgres:15.3-alpine
+    container_name: postgresql
+    mem_limit: 512M
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+
+  tracing-server:
+    image: openzipkin/zipkin
+    container_name: tracing-server
+    mem_limit: 512M
+    environment:
+    - JAVA_OPTS=-XX:+UnlockExperimentalVMOptions -Djava.security.egd=file:/dev/./urandom
+    ports:
+     - 9411:9411
+
+  admin-server:
+    image: vburtelov/spring-pricehunt-admin-server
+    container_name: admin-server
+    mem_limit: 512M
+    depends_on:
+     - config-server
+     - discovery-server
+    entrypoint: ["./dockerize","-wait=tcp://discovery-server:8761","-timeout=60s","--","java", "org.springframework.boot.loader.JarLauncher"]
+    ports:
+     - 9090:9090
+
+  grafana-server:
+    build: ./docker/grafana
+    container_name: grafana-server
+    mem_limit: 256M
+    ports:
+    - 3000:3000
+
+  prometheus-server:
+    build: ./docker/prometheus
+    container_name: prometheus-server
+    mem_limit: 256M
+    ports:
+    - 9091:9090
